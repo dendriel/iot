@@ -2,6 +2,7 @@
 #include <WiFi.h>
 #include <WebServer.h>
 
+#include "http_server.h"
 #include "framebuffer.h"
 #include "camera.h"
 #include "img_converters.h"

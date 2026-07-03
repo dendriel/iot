@@ -2,14 +2,22 @@
 
 #include "camera.h"
 #include "globals.h"
-#include "webserver.h"
+#include "http_server.h"
 #include "framebuffer.h"
 #include "detector.h"
+/**
+ * secrets.h file is gitignored. Create it with the following:
+* #pragma once
+ *
+ * #define WIFI_SSID "MyWifiName"
+ * #define WIFI_PASSWORD "MyWifiPassword"
+ */
+#include "secrets.h"
 
-const char *ssid = "";
-const char *password = "";
+const char *ssid = WIFI_SSID;
+const char *password = WIFI_PASSWORD;
 
-const unsigned long captureInterval = 500;
+const unsigned long captureInterval = 1000;
 
 unsigned long lastCapture = 0;
 
