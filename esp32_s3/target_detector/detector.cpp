@@ -1,5 +1,5 @@
 #include "detector.h"
-#include "framebuffer.h"
+
 #include <Arduino.h>
 
 static const int IMAGE_WIDTH  = 320;
@@ -7,124 +7,204 @@ static const int IMAGE_HEIGHT = 240;
 
 static bool gTargetDetected = false;
 
-// ---------------- CONFIG ----------------
-#define EDGE_THRESHOLD 28
-#define MIN_LINE_RATIO 0.70   // 70% da linha precisa ser borda
-#define STEP_SCAN      2
-#define SIZE_STEP      6
-#define MIN_SIZE       20
-// ----------------------------------------
+#define GREEN_THRESHOLD   140
+#define RED_THRESHOLD     150
+#define BLUE_THRESHOLD    90
 
-// RGB converter
-static inline void rgb565ToRgb(uint16_t pixel, uint8_t &r, uint8_t &g, uint8_t &b)
+#define MIN_HP_WIDTH      40
+#define MONSTER_HEIGHT    20
+
+#define ICON_WIDTH        22
+#define ICON_HEIGHT       22
+
+#define BORDER_MARGIN     2
+
+//------------------------------------------------------------
+
+struct Monster
+{
+    int iconX;
+    int iconY;
+};
+
+//------------------------------------------------------------
+
+static inline void rgb565ToRgb(uint16_t pixel,
+                               uint8_t &r,
+                               uint8_t &g,
+                               uint8_t &b)
 {
     r = ((pixel >> 11) & 0x1F) << 3;
     g = ((pixel >> 5) & 0x3F) << 2;
     b = (pixel & 0x1F) << 3;
 }
 
-// Luma (grayscale)
-static inline uint8_t getLuma(uint16_t pixel)
+//------------------------------------------------------------
+
+static inline bool isGreen(uint16_t pixel)
 {
-    uint8_t r, g, b;
-    rgb565ToRgb(pixel, r, g, b);
-    return (uint8_t)((30 * r + 59 * g + 11 * b) / 100);
+    uint8_t r,g,b;
+
+    rgb565ToRgb(pixel,r,g,b);
+
+    return
+        g > GREEN_THRESHOLD &&
+        r < 100 &&
+        b < 100;
 }
 
-// Edge detection (local gradient)
-static inline bool isEdge(uint8_t a, uint8_t b)
+//------------------------------------------------------------
+
+static inline bool isPink(uint16_t pixel)
 {
-    return abs(a - b) > EDGE_THRESHOLD;
+    uint8_t r,g,b;
+
+    rgb565ToRgb(pixel,r,g,b);
+
+    return
+        r > RED_THRESHOLD &&
+        g < 110 &&
+        b > BLUE_THRESHOLD;
 }
 
-// ---------------- EDGE MAP ----------------
-static void buildEdgeMap(uint8_t *edgeMap, const uint16_t *img, int w, int h)
+//------------------------------------------------------------
+// Procura barras verdes
+//------------------------------------------------------------
+
+static int findMonsters(const uint16_t *img,
+                        Monster *monsters,
+                        int maxMonsters)
 {
-    for (int y = 1; y < h - 1; y++)
+    int count = 0;
+
+    for(int y=10; y<220; y++)
     {
-        for (int x = 1; x < w - 1; x++)
+        int run = 0;
+
+        for(int x=90; x<310; x++)
         {
-            uint8_t c  = getLuma(img[y * w + x]);
-            uint8_t r  = getLuma(img[y * w + x + 1]);
-            uint8_t d  = getLuma(img[(y + 1) * w + x]);
+            if(isGreen(img[y*IMAGE_WIDTH+x]))
+                run++;
+            else
+                run=0;
 
-            edgeMap[y * w + x] = (isEdge(c, r) || isEdge(c, d)) ? 1 : 0;
-        }
-    }
-}
-
-// ---------------- LINE VALIDATION ----------------
-static bool checkHorizontal(const uint8_t *edgeMap, int w, int x0, int x1, int y)
-{
-    int hits = 0;
-    int len  = x1 - x0;
-
-    for (int x = x0; x <= x1; x++)
-    {
-        if (edgeMap[y * w + x]) hits++;
-    }
-
-    return hits > len * MIN_LINE_RATIO;
-}
-
-static bool checkVertical(const uint8_t *edgeMap, int w, int y0, int y1, int x)
-{
-    int hits = 0;
-    int len  = y1 - y0;
-
-    for (int y = y0; y <= y1; y++)
-    {
-        if (edgeMap[y * w + x]) hits++;
-    }
-
-    return hits > len * MIN_LINE_RATIO;
-}
-
-// ---------------- MAIN DETECTOR ----------------
-static bool detectSquareRing(const uint16_t *img, int w, int h)
-{
-    static uint8_t edgeMap[320 * 240]; // memória fixa (ok p/ ESP32)
-
-    buildEdgeMap(edgeMap, img, w, h);
-
-    for (int size = MIN_SIZE; size < (w < h ? w : h); size += SIZE_STEP)
-    {
-        for (int y = 0; y < h - size; y += STEP_SCAN)
-        {
-            for (int x = 0; x < w - size; x += STEP_SCAN)
+            if(run>MIN_HP_WIDTH)
             {
-                int x2 = x + size;
-                int y2 = y + size;
+                if(count<maxMonsters)
+                {
+                    monsters[count].iconX = x-run-18;
+                    monsters[count].iconY = y-12;
 
-                // TOP + BOTTOM
-                if (!checkHorizontal(edgeMap, w, x, x2, y))  continue;
-                if (!checkHorizontal(edgeMap, w, x, x2, y2)) continue;
+                    count++;
+                }
 
-                // LEFT + RIGHT
-                if (!checkVertical(edgeMap, w, y, y2, x))  continue;
-                if (!checkVertical(edgeMap, w, y, y2, x2)) continue;
+                y += MONSTER_HEIGHT;
 
-                // encontrou um aro/quadrado fechado
-                return true;
+                break;
             }
         }
     }
 
-    return false;
+    return count;
 }
 
-// ---------------- PUBLIC API ----------------
+//------------------------------------------------------------
+
+static bool hasPinkBorder(const uint16_t *img,
+                          int x,
+                          int y)
+{
+    int hits=0;
+    int total=0;
+
+    //--------------------------------------------------------
+    // topo
+    //--------------------------------------------------------
+
+    for(int i=0;i<ICON_WIDTH;i++)
+    {
+        total++;
+
+        if(isPink(img[(y+BORDER_MARGIN)*IMAGE_WIDTH+
+                      (x+i)]))
+            hits++;
+    }
+
+    //--------------------------------------------------------
+    // baixo
+    //--------------------------------------------------------
+
+    for(int i=0;i<ICON_WIDTH;i++)
+    {
+        total++;
+
+        if(isPink(img[(y+ICON_HEIGHT-BORDER_MARGIN)*IMAGE_WIDTH+
+                      (x+i)]))
+            hits++;
+    }
+
+    //--------------------------------------------------------
+    // esquerda
+    //--------------------------------------------------------
+
+    for(int i=0;i<ICON_HEIGHT;i++)
+    {
+        total++;
+
+        if(isPink(img[(y+i)*IMAGE_WIDTH+
+                      (x+BORDER_MARGIN)]))
+            hits++;
+    }
+
+    //--------------------------------------------------------
+    // direita
+    //--------------------------------------------------------
+
+    for(int i=0;i<ICON_HEIGHT;i++)
+    {
+        total++;
+
+        if(isPink(img[(y+i)*IMAGE_WIDTH+
+                      (x+ICON_WIDTH-BORDER_MARGIN)]))
+            hits++;
+    }
+
+    return hits > total*0.55;
+}
+
+//------------------------------------------------------------
+
 bool detectTarget(const uint16_t *frame)
 {
-    if (!frame)
+    if(frame==nullptr)
     {
-        gTargetDetected = false;
+        gTargetDetected=false;
         return false;
     }
 
-    gTargetDetected = detectSquareRing(frame, IMAGE_WIDTH, IMAGE_HEIGHT);
-    return gTargetDetected;
+    Monster monsters[12];
+
+    int total=findMonsters(frame,
+                           monsters,
+                           12);
+
+    for(int i=0;i<total;i++)
+    {
+        if(hasPinkBorder(frame,
+                         monsters[i].iconX,
+                         monsters[i].iconY))
+        {
+            gTargetDetected=true;
+            return true;
+        }
+    }
+
+    gTargetDetected=false;
+
+    return false;
 }
+
+//------------------------------------------------------------
 
 bool isTargetDetected()
 {
